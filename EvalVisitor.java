@@ -41,7 +41,6 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     }
 
     public Boolean assign_type_check(String given_type, String type){
-
         if(type.equals(given_type)){
             return true;
         }else{
@@ -60,22 +59,35 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         //program terminated
         return true;
     }
+    //main
+    public Boolean visitMain(calParser.MainContext ctx){
+        visit(ctx.decl_list());
+        visit(ctx.statement_block());
+        return true;
+    }
     //function
     @Override
     public String visitFunction(calParser.FunctionContext ctx){
+        /*set the id -> key
+        funct_attr -> value
+        declare type -> function
+        set param list length for easy access for comparison with arg_list
+        get the paramlist as a string,for comparison with arg_list types
+        */
+        
         String func_id = ctx.ID().getText();
         String ret_type = visit(ctx.func_return_type()).toString();
         String decl_type = "func";
-        //get the id : type
-        String param_li_str = ctx.parameter_list().toString(); 
+        String param_li_str = ctx.parameter_list().getText(); 
         String param_size = String.valueOf(ctx.parameter_list().toString().split(",").length);
         
         HashMap<String,String> func_attr = new HashMap<String,String>();
         func_attr.put("id", func_id);
-        func_attr.put("ret_type", ret_type);
+        func_attr.put("type", ret_type);
         func_attr.put("decl_type",decl_type);
         func_attr.put("param_list",param_li_str);
         func_attr.put("param_size",param_size);
+        func_attr.put("accessed","f");
         
         scope.peek().put(func_id, func_attr);
         
@@ -91,7 +103,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
 
         scope.pop();
         //terminate
-        return "";
+        return ret_type;
 
     }
 
@@ -104,10 +116,10 @@ public class EvalVisitor extends calBaseVisitor<Object>{
             //make error object
             return "ID already declared";
         }
-        String type = ctx.type().getText();
+        String type = visit(ctx.type()).toString();
         HashMap<String,String> attr = init_attributes(type, "var");
         scope.peek().put(id,attr);
-        return id;
+        return type;
     }
 
 
@@ -133,7 +145,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         }
         
         
-        return id;
+        return type;
     }
     
     
@@ -141,7 +153,9 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     @Override 
     public String visitAssignstm(calParser.AssignstmContext ctx){
         String id = ctx.ID().getText();
+        System.out.println(ctx.expression().getText());
         String expr_type = visit(ctx.expression()).toString();
+        System.out.println(expr_type);
         String key = "decl_type";
         //check if id is declared
         if(is_declared(id)){
@@ -175,14 +189,33 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     public String visitArgstm(calParser.ArgstmContext ctx){
         String id = ctx.ID().getText();
         //check if given id is declared
-        if(is_declared(id)){
-            String id_li = visit(ctx.arg_list()).toString();
-            //check if each ID exists
+        String[] arg_li = ctx.arg_list().getText().split(",");
+        if(function_call(arg_li, id)){
+            return scope.peek().get(id).get("type");
         }
-        return "";
+        return "null";
     }
 
+    @Override
+    public String visitBEstm(calParser.BEstmContext ctx){
+        visit(ctx.statement_block());
+        return "state block";
+    }
 
+    @Override
+    public String visitIfstm(calParser.IfstmContext ctx){
+        visit(ctx.condition());
+        visit(ctx.statement_block(0));
+        visit(ctx.statement_block(1));
+        return "if statement";
+    }
+
+    @Override
+    public String visitLoopstm(calParser.LoopstmContext ctx){
+        visit(ctx.condition());
+        visit(ctx.statement_block());
+        return "loop";
+    }
 
 
     //deals with return the type/function type 
@@ -199,12 +232,12 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     
     @Override 
     public String visitType_bool(calParser.Type_boolContext ctx){
-        return "bool";
+        return "boolean";
     }
 
     @Override 
     public String visitType_int(calParser.Type_intContext ctx){
-        return "int";
+        return "integer";
     }
 
 
@@ -243,18 +276,18 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         return ret_li;
     }
 
-    //comp_op block
+    
     //expression block
     @Override
     public String visitBinopExpr(calParser.BinopExprContext ctx){
         //check if fragment types are int since its a binop
         String lfrag = visit(ctx.frag(0)).toString();
         String rfrag = visit(ctx.frag(1)).toString();
-        if (!(lfrag.equals("int")) || !(rfrag.equals("int"))){
+        if (!(lfrag.equals("integer")) || !(rfrag.equals("integer"))){
             //error
             System.out.println("Binop");
         }
-        return "int";
+        return "integer";
     }
 
     @Override
@@ -267,9 +300,53 @@ public class EvalVisitor extends calBaseVisitor<Object>{
 
     @Override
     public String visitInvokdedid_expr(calParser.Invokdedid_exprContext ctx){
-        //check if ID is a function type
-        //check if the arglist match the paramlist
-        return "";
+        String id = ctx.ID().getText();
+        //check if given id is declared
+        String[] arg_li = ctx.arg_list().getText().split(",");
+        if(function_call(arg_li, id)){
+            return scope.peek().get(id).get("type");
+        }
+        
+        return "null";
+        
+    }
+    //used by visitInvoked_id & visitArgstm
+    public Boolean function_call(String[] arg_li,String id){
+        if(is_declared(id)){
+            //check if arg length is the same as param length
+            
+            
+            String[] func_param = scope.peek().get(id).get("param_list").split(",");
+            if(arg_li.length != func_param.length){
+                //err
+                System.out.println("not same length param,given arg");
+                return false;
+            }
+            
+            /*each item in func param is of form id : type
+            each item in arg_li is of form id
+            access each id from arg_li and get the type
+            check if each type corresponds to the given parameter
+            */
+            
+            for(int i=0;i<func_param.length;i++){
+                String param_type = func_param[i].split(":")[1];
+                String id_key = arg_li[i];
+                String arg_type = scope.peek().get(id_key).get("type");
+                if(!param_type.equals(arg_type)){
+                    System.out.println(param_type+arg_type);
+                    System.out.println("unmatched type");
+                    return false;
+                    //raise err
+                }
+            }
+        }else{
+            //err
+            System.out.println("no function called id");
+            return false;
+        }
+        return true;
+
     }
     
     @Override
@@ -305,13 +382,13 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     @Override
     public String visitFrag_num(calParser.Frag_numContext ctx){
         String num = ctx.NUMBER().getText();
-        return "int";
+        return "integer";
     }
 
     @Override
     public String visitFrag_BV(calParser.Frag_BVContext ctx){
         String bv = ctx.BV().getText();
-        return "bool";
+        return "boolean";
     }
 
     @Override
@@ -319,8 +396,8 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         //should always return an int type since its calling fragprime unless fragprime returns null
         //visit(ctx.expression());
         String type = visit(ctx.frag_prime()).toString();
-        if (type.equals("int")){
-            return "int";
+        if (type.equals("integer")){
+            return "integer";
         }else{
             return type;
         }
@@ -340,7 +417,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         }
         visit(ctx.arg_list());
         visit(ctx.frag_prime());
-        return "int";
+        return "integer";
     }
 
     @Override
@@ -352,7 +429,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         }
         String type = visit(ctx.frag_prime()).toString();
 
-        return id;
+        return type;
     } 
 
     @Override
@@ -363,18 +440,20 @@ public class EvalVisitor extends calBaseVisitor<Object>{
             return id;
         }
         visit(ctx.frag_prime());
-        return id;
+        String type = scope.peek().get(id).get("type");
+
+        return type;
     }
 
     @Override
     public String visitFrag_num_recur(calParser.Frag_num_recurContext ctx){
         String num = ctx.NUMBER().getText();
         String type = visit(ctx.frag_prime()).toString();
-        if (!(type.equals("int"))){
+        if (!(type.equals("integer"))){
             return "";
             //error
         }
-        return "int";
+        return "integer";
     }
 
     @Override
@@ -385,7 +464,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
             System.out.println("frag_bv_recur_error");
             //set an error
         }
-        return "bool";
+        return "boolean";
 
     }
 
@@ -393,18 +472,18 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     @Override
     public String visitFragPrime_branch1(calParser.FragPrime_branch1Context ctx){
         String fragctx = visit(ctx.frag()).toString();
-        if (!fragctx.equals("int")){
+        if (!fragctx.equals("integer")){
             //error
             System.out.println("fprime_branch1");
         }
         visit(ctx.frag_prime());
-        return fragctx;
+        return "integer";
     } 
 
     @Override
     public String visitFragPrime_branch2(calParser.FragPrime_branch2Context ctx){
         String fragctx = visit(ctx.frag()).toString();
-        return fragctx;
+        return "integer";
     }
 
     @Override
@@ -423,35 +502,58 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         char c = cond_value.charAt(0);
         String neg_cond_value = (c =='t' || c == 'T') ? "false" : "true";
         return neg_cond_value;*/
-        return "bool";
+        return "boolean";
     }
 
     @Override
     public String visitBracket_cond(calParser.Bracket_condContext ctx){
-        return "bool";
+        return "boolean";
     }
 
     @Override
     public String visitComp_op_cond(calParser.Comp_op_condContext ctx){
-        visit(ctx.expression(0));
-        visit(ctx.expression(1));
+        String type0 = visit(ctx.expression(0)).toString();
+        String type1 = visit(ctx.expression(1)).toString();
+        if (ctx.comp_op().equals("integer")){
+            if (!type0.equals("integer") || !type1.equals("integer")){
+                //err
+                System.out.println("comp_op err");
+            }
+        }        
         /*check if left type = right type
         if matching type, return the context 
         otherwise raise an error*/
-        return "bool";
+        return "boolean";
     }
 
     @Override
     public String visitAndOr_cond(calParser.AndOr_condContext ctx){
         ctx.condition(0);
         ctx.condition(1);
-        /*check if left type = right type
-        if matching type, return the context 
-        otherwise raise an error*/
-        return "bool";
+        return "boolean";
     }
     
+    //comp_op
+    @Override
+    public String visitLess_op(calParser.Less_opContext ctx){
+        return "integer";
+    }
     
+    @Override
+    public String visitLessEq_op(calParser.LessEq_opContext ctx){
+        return "integer";
+    }
+
+    @Override
+    public String visitGreat_op(calParser.Great_opContext ctx){
+        return "integer";
+    }
+
+    @Override
+    public String visitGreatEq_op(calParser.GreatEq_opContext ctx){
+        return "integer";
+    }
+
     
 
     
