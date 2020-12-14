@@ -9,16 +9,19 @@ import java.util.LinkedList;
 public class EvalVisitor extends calBaseVisitor<Object>{
     HashMap<String, HashMap<String,String>> table = new HashMap<String,HashMap<String,String>>();
     Stack<HashMap<String,HashMap<String,String>>> scope = new Stack<>();
+    SemanticError err = new SemanticError();
+    ArrayList<String> err_accumulator = new ArrayList<String>();
     
-
     public HashMap<String,String> init_attributes(String type,String decl_type){
         HashMap<String,String> id_attributes = new HashMap<String,String>();
         String loctype = type;
         String locdecl_type = decl_type;
         String accessed = "f";
+        String assigned = "t";
         id_attributes.put("type",loctype);
         id_attributes.put("decl_type",locdecl_type);
         id_attributes.put("accessed",accessed);
+        id_attributes.put("assigned",assigned);
         return id_attributes;
     }
 
@@ -29,15 +32,14 @@ public class EvalVisitor extends calBaseVisitor<Object>{
 
     //get the declate type of an identifier ie constant or variable
     public String check_decl_type(String id){
-        try{
-            if (is_declared(id)){
-                return scope.peek().get(id).get("decl_type");
-            }
-        }catch(Exception e){
-            System.out.println(e);
+        
+        if (is_declared(id)){
+            return scope.peek().get(id).get("decl_type");
+        }else{
+            err_accumulator.add(err.undeclaredVar(id));
+            return "null";
         }
-        //make not declared error object
-        return "Not Declared";
+        
     }
 
     public Boolean assign_type_check(String given_type, String type){
@@ -45,6 +47,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
             return true;
         }else{
             //raise an error
+            err_accumulator.add(err.assigntypeErr(type, given_type));
             return false;
         }        
     }
@@ -55,11 +58,22 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         visit(ctx.decl_list());
         visit(ctx.function_list());
         visit(ctx.main());
+        ArrayList<String> keylist = new ArrayList<String>(scope.peek().keySet());
+        for (String id : keylist){
+            if (!scope.peek().get(id).get("accessed").equals("t")){
+                err_accumulator.add(id + " not in use");
+            }
+            
+        }
         scope.pop();
         //program terminated
+        for (String str:err_accumulator){
+            System.out.println(str);
+        }
         return true;
     }
     //main
+    @Override
     public Boolean visitMain(calParser.MainContext ctx){
         visit(ctx.decl_list());
         visit(ctx.statement_block());
@@ -91,18 +105,30 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         
         scope.peek().put(func_id, func_attr);
         
-        for(Object V:scope.peek().values().toArray()){
+        /*for(Object V:scope.peek().values().toArray()){
             System.out.println(V.toString());
-        }
+        }*/
+
         HashMap<String, HashMap<String,String>> local_table = new HashMap<String,HashMap<String,String>>();
         
         scope.push(local_table);
+        visit(ctx.parameter_list());
         visit(ctx.decl_list());
         visit(ctx.statement_block());
         visit(ctx.expression());
 
+        ArrayList<String> keylist = new ArrayList<String>(scope.peek().keySet());
+        for (String id : keylist){
+            if (!scope.peek().get(id).get("accessed").equals("t")){
+                err_accumulator.add(id + " not in use");
+            }
+            if (!scope.peek().get(id).get("assigned").equals("t")){
+                err_accumulator.add(id+" has no assigned value");
+            }
+        }
         scope.pop();
         //terminate
+        scope.peek().get(func_id).replace("accessed", "t");
         return ret_type;
 
     }
@@ -114,7 +140,8 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         //check for already existing id
         if (is_declared(id)){
             //make error object
-            return "ID already declared";
+            err_accumulator.add(err.already_declared(id));
+            return "null";
         }
         String type = visit(ctx.type()).toString();
         HashMap<String,String> attr = init_attributes(type, "var");
@@ -129,7 +156,8 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         //check for already existing id
         if (is_declared(id)){
             //make error object
-            return "ID already declared";
+            err_accumulator.add(err.already_declared(id));
+            return "null";
         }
         //returns the expression type 
         String given_type = visit(ctx.expression()).toString();
@@ -137,13 +165,11 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String type = visit(ctx.type()).toString();
         
         HashMap<String,String> attr = init_attributes(type, "const");
+        attr.replace("assigned", "t");
         if (assign_type_check(given_type,type)){
             scope.peek().put(id, attr);
-        }else{
-            //err
-            System.out.println("Unmatched type");
+
         }
-        
         
         return type;
     }
@@ -153,9 +179,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     @Override 
     public String visitAssignstm(calParser.AssignstmContext ctx){
         String id = ctx.ID().getText();
-        System.out.println(ctx.expression().getText());
         String expr_type = visit(ctx.expression()).toString();
-        System.out.println(expr_type);
         String key = "decl_type";
         //check if id is declared
         if(is_declared(id)){
@@ -168,19 +192,20 @@ public class EvalVisitor extends calBaseVisitor<Object>{
                String type = map.get(key);
                if(assign_type_check(expr_type, type)){
                    //set id as accessed
-                   key = "accessed";
+                   key = "assigned";
                    map.replace(key, "t");
                }else{
                    //err unmatched
-                   System.out.println("cant assign xtype to ytype");
+                   err_accumulator.add(err.assigntypeErr(expr_type, type));
                }
            }else{
                //error,cant change constant
-               System.out.println("can't change constant");
+               err_accumulator.add(err.changeConstant(id));
            }
         }else{
             //error undeclared id
-            System.out.println("undeclared");
+            err_accumulator.add(ctx.getStart().getLine() + ":" + err.undeclaredVar(id));
+            
         }
         return "";
     }
@@ -190,7 +215,9 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String id = ctx.ID().getText();
         //check if given id is declared
         String[] arg_li = ctx.arg_list().getText().split(",");
+        visit(ctx.arg_list());
         if(function_call(arg_li, id)){
+            scope.peek().get(id).replace("accessed", "t");
             return scope.peek().get(id).get("type");
         }
         return "null";
@@ -247,33 +274,22 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String id = ctx.ID().getText();
         if(!is_declared(id)){
             //declare undeclared error
-            return "";
+            err_accumulator.add(ctx.getStart().getLine() + ":" + err.undeclaredVar(id));
+            return "null";
         }
+        scope.peek().get(id).replace("accessed", "t");
         return id;
     }
 
     @Override 
     public String[] visitNempArgListIDs(calParser.NempArgListIDsContext ctx){
-        //get list of identifiers
-        ArrayList<Object> id_li = new ArrayList<Object>();   
-        //get the firts ID
-        id_li.add(ctx.ID().getText());
-        String str = ctx.nemp_arg_list().getText();
-        //split rest of the ids
-        String[] strli = str.split(",");
-        for(String id:strli){
-            id_li.add(id);
-        }
-        
-        String[] ret_li = id_li.toArray(new String[id_li.size()]);
-        //check if each id is deaclared
-        for(String x:ret_li){
-            if(!(is_declared(x))){
-                System.out.println(x);
-                //error undeclared type
+        String[] li = ctx.getText().toString().split(",");
+        for(String id:li){
+            if(is_declared(id)){
+                scope.peek().get(id).replace("accessed", "t");
             }
         }
-        return ret_li;
+        return li;
     }
 
     
@@ -283,9 +299,12 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         //check if fragment types are int since its a binop
         String lfrag = visit(ctx.frag(0)).toString();
         String rfrag = visit(ctx.frag(1)).toString();
+        String binop = ctx.binary_arith_op().getText();
+
         if (!(lfrag.equals("integer")) || !(rfrag.equals("integer"))){
             //error
-            System.out.println("Binop");
+            err_accumulator.add(ctx.getStart().getLine() + ":" + err.optypeErr("boolean",binop));
+            
         }
         return "integer";
     }
@@ -304,6 +323,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         //check if given id is declared
         String[] arg_li = ctx.arg_list().getText().split(",");
         if(function_call(arg_li, id)){
+            scope.peek().get(id).replace("accessed", "t");
             return scope.peek().get(id).get("type");
         }
         
@@ -319,7 +339,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
             String[] func_param = scope.peek().get(id).get("param_list").split(",");
             if(arg_li.length != func_param.length){
                 //err
-                System.out.println("not same length param,given arg");
+                err_accumulator.add("Arguments does not match Parameter");
                 return false;
             }
             
@@ -333,16 +353,16 @@ public class EvalVisitor extends calBaseVisitor<Object>{
                 String param_type = func_param[i].split(":")[1];
                 String id_key = arg_li[i];
                 String arg_type = scope.peek().get(id_key).get("type");
+                scope.peek().get(id_key).replace("accessed", "t");
                 if(!param_type.equals(arg_type)){
-                    System.out.println(param_type+arg_type);
-                    System.out.println("unmatched type");
+                    err_accumulator.add(err.assigntypeErr(param_type, arg_type));
                     return false;
                     //raise err
                 }
             }
         }else{
             //err
-            System.out.println("no function called id");
+            err_accumulator.add(err.funcNotFound(id));
             return false;
         }
         return true;
@@ -362,6 +382,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String id = ctx.ID().getText();
         //check if id is declared
         if (is_declared(id)){
+            scope.peek().get(id).replace("accessed", "t");
             return scope.peek().get(id).get("type");
         }else{
             //create error type, addErrorNode
@@ -372,6 +393,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
     public String visitFrag_negid(calParser.Frag_negidContext ctx){
         String id = ctx.ID().getText();
         if (is_declared(id)){
+            scope.peek().get(id).replace("accessed", "t");
             return scope.peek().get(id).get("type");
         }else{
             //declare error
@@ -413,8 +435,10 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String id = ctx.ID().getText();
         if(!(is_declared(id))){
             //not declared error
-            return "";
+            err_accumulator.add(err.undeclaredVar(id));
+            return "null";
         }
+        scope.peek().get(id).replace("accessed", "t");
         visit(ctx.arg_list());
         visit(ctx.frag_prime());
         return "integer";
@@ -428,7 +452,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
             return id;
         }
         String type = visit(ctx.frag_prime()).toString();
-
+        scope.peek().get(id).replace("accessed", "t");
         return type;
     } 
 
@@ -441,7 +465,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         }
         visit(ctx.frag_prime());
         String type = scope.peek().get(id).get("type");
-
+        scope.peek().get(id).replace("accessed", "t");
         return type;
     }
 
@@ -450,7 +474,9 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String num = ctx.NUMBER().getText();
         String type = visit(ctx.frag_prime()).toString();
         if (!(type.equals("integer"))){
-            return "";
+            
+            err_accumulator.add(err.optypeErr(type, "bin_op"));
+            return "null";
             //error
         }
         return "integer";
@@ -461,7 +487,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String bv = ctx.BV().getText();
         String type = visit(ctx.frag_prime()).toString();
         if (!type.equals("null")){
-            System.out.println("frag_bv_recur_error");
+            err_accumulator.add("cannot perform operation on boolean and non-boolean");
             //set an error
         }
         return "boolean";
@@ -474,7 +500,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         String fragctx = visit(ctx.frag()).toString();
         if (!fragctx.equals("integer")){
             //error
-            System.out.println("fprime_branch1");
+            err_accumulator.add(err.optypeErr(fragctx, "integer", ctx.binary_arith_op().getText()));
         }
         visit(ctx.frag_prime());
         return "integer";
@@ -517,7 +543,7 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         if (ctx.comp_op().equals("integer")){
             if (!type0.equals("integer") || !type1.equals("integer")){
                 //err
-                System.out.println("comp_op err");
+                err_accumulator.add(err.optypeErr(type0, type1, ctx.comp_op().getText()));
             }
         }        
         /*check if left type = right type
@@ -554,8 +580,26 @@ public class EvalVisitor extends calBaseVisitor<Object>{
         return "integer";
     }
 
-    
+    //nemp_param_list
+    @Override
+    public String visitParam_list(calParser.Param_listContext ctx){
+        String id = ctx.ID().getText();
+        String type = visit(ctx.type()).toString();
+        HashMap<String,String> attr = init_attributes(type, "var");
+        scope.peek().put(id, attr);
+        return type;
+    }
 
+    @Override
+    public String[] visitParam_list_recur(calParser.Param_list_recurContext ctx){
+        String[] li = ctx.getText().toString().split(",");
+        for(String str:li){
+            String[] tmp = str.split(":");
+            HashMap<String,String> attr = init_attributes(tmp[1], "var");
+            scope.peek().put(tmp[0], attr);
+        }
+        return li;
+    }
     
     
 
